@@ -1,0 +1,263 @@
+---
+title: "520_project"
+format: pdf
+---
+
+# Loading and preocessing the data
+```{r}
+library(readr)
+library(dplyr)
+library(tidyr) 
+
+# Load ASD scores from two data samples and add a label column
+goal_df <- read_csv("asd_goal.csv") %>%
+  mutate(sample_type = "goal")
+
+event_df <- read_csv("asd_event.csv") %>%
+  mutate(sample_type = "event")
+
+# Combine the two dataframes
+combined_df <- bind_rows(goal_df, event_df)
+
+# Remove rows with any NA or empty string ("") values
+data_df <- combined_df %>%
+  filter(if_all(everything(), ~ !is.na(.) & . != "" & . >= 0))
+
+head(data_df)
+```
+
+# Descriptive Stats
+
+## Item-wise Stats
+```{r}
+library(psych)
+library(tidyverse)
+library(dplyr)
+library(e1071)
+
+# Item-wise descriptive stats
+# Long format data for items
+long_items <- data_df %>%
+  pivot_longer(cols = starts_with("Q25_"), names_to = "item", values_to = "value")
+
+# Summary stats by sample and item
+item_summary <- long_items %>%
+  group_by(sample_type, item) %>%
+  summarise(
+    n = n(),
+    mean = mean(value, na.rm = TRUE),
+    median = median(value, na.rm = TRUE),
+    sd = sd(value, na.rm = TRUE),
+    skew = skewness(value, na.rm = TRUE, type = 2),
+    kurt = kurtosis(value, na.rm = TRUE, type = 2),
+    min = min(value, na.rm = TRUE),
+    max = max(value, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Sample wise descriptive stats
+# Get range of each descriptive stat by sample_type
+sample_summary <- item_summary %>%
+  group_by(sample_type) %>%
+  summarise(
+    mean_range = paste0(round(min(mean, na.rm = TRUE), 2), " – ", round(max(mean, na.rm = TRUE), 2)),
+    median_range = paste0(round(min(median, na.rm = TRUE), 2), " – ", round(max(median, na.rm = TRUE), 2)),
+    sd_range = paste0(round(min(sd, na.rm = TRUE), 2), " – ", round(max(sd, na.rm = TRUE), 2)),
+    skew_range = paste0(round(min(skew, na.rm = TRUE), 2), " – ", round(max(skew, na.rm = TRUE), 2)),
+    kurt_range = paste0(round(min(kurt, na.rm = TRUE), 2), " – ", round(max(kurt, na.rm = TRUE), 2))
+  )
+```
+
+## Composite score stats
+```{r}
+# Compute descriptive statistics for the final ASD score by sample_type
+describe_by_sample <- describeBy(data_df$asd, group = data_df$sample_type, mat = TRUE)
+
+# Compute and clean descriptive statistics
+describe_df <- describeBy(data_df$asd, group = data_df$sample_type, mat = TRUE) %>%
+  as_tibble() %>%
+  rename(Sample = group1) %>%
+  select(Sample,
+         `N` = n,
+         `Mean` = mean,
+         `SD` = sd,
+         `Median` = median,
+         `Min` = min,
+         `Max` = max,
+         `Skewness` = skew,
+         `Kurtosis` = kurtosis) %>%
+  mutate(across(where(is.numeric), ~ round(., 2)))
+
+# Print in console for copy-pasting into PowerPoint
+print(describe_df)
+```
+
+## Distribution of composite score
+```{r}
+library(ggplot2)
+
+# Plot histograms with overlaid density curves
+ggplot(data_df, aes(x = asd, fill = sample_type)) +
+  geom_histogram(aes(y = ..density..), binwidth = 5, color = "white", alpha = 0.6) +
+  geom_density(alpha = 0.8, color = "black") +
+  facet_wrap(~sample_type, ncol = 2) +
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Distribution of ASD Scores by Sample Type",
+    x = "ASD Score",
+    y = "Density"
+  ) +
+  theme(
+    strip.text = element_text(face = "bold"),
+    legend.position = "none"
+  )
+```
+
+# Exploratory factor analysis for two samples
+```{r}
+library(lavaan)
+library(tidyverse)
+
+# Get item names
+q25_items <- names(data_df)[str_detect(names(data_df), "^Q25_")]
+
+# Subset goal and event samples
+goal_data <- data_df %>% filter(sample_type == "goal") %>% select(all_of(q25_items))
+event_data <- data_df %>% filter(sample_type == "event") %>% select(all_of(q25_items))
+```
+
+# Number of factors
+```{r}
+# Select only ordinal item columns and ensure no NAs
+goal_items <- goal_data %>%
+  select(starts_with("Q25_")) %>%
+  drop_na()
+
+# Convert to matrix just to be safe
+goal_items_matrix <- as.matrix(goal_items)
+
+# Compute polychoric correlation
+goal_pcorr <- lavCor(goal_items_matrix, ordered = TRUE)
+
+# Number of observations
+n_goal <- nrow(goal_items)
+
+suppressWarnings(
+  psych::fa.parallel(
+    goal_pcorr,
+    n.obs = nrow(goal_items),
+    fm = "pa",
+    error.bars = TRUE
+  )
+)
+```
+
+```{r}
+# Select only ordinal item columns and ensure no NAs
+event_items <- event_data %>%
+  select(starts_with("Q25_")) %>%
+  drop_na()
+
+# Convert to matrix just to be safe
+event_items_matrix <- as.matrix(event_items)
+
+# Compute polychoric correlation
+event_pcorr <- lavCor(event_items_matrix, ordered = TRUE)
+
+# Number of observations
+n_event <- nrow(event_items)
+
+suppressWarnings(
+  psych::fa.parallel(
+    event_pcorr,
+    n.obs = nrow(event_items),
+    fm = "pa",
+    error.bars = TRUE
+  )
+)
+```
+
+Both samples suggest number of factors = 4.
+
+# EFA for 3-5 factors
+```{r}
+# Run EFA with 3 to 5 factors for each, using DWLS for ordinal data
+efa_goal <- efa(goal_data, nfactors = 3:5, ordered = TRUE)
+efa_event <- efa(event_data, nfactors = 3:5, ordered = TRUE)
+```
+
+```{r}
+summary(efa_goal)
+```
+
+To evaluate the latent structure of the Social Responsiveness Scale items in the goal sample, exploratory factor analyses (EFA) were conducted using the lavaan package with diagonally weighted least squares (DWLS) estimation and geomin oblique rotation. Models specifying three, four, and five factors were compared based on conventional fit indices and explained variance. The three-factor model demonstrated moderate fit, χ²(1888) = 2074.76, p = .002, CFI = .882, RMSEA = .054, and accounted for 52.2% of the total variance. The four-factor model yielded improved fit, χ²(1826) = 1981.93, p = .006, CFI = .902, RMSEA = .050, and explained 59.5% of the variance. The five-factor model demonstrated the best fit, χ²(1765) = 1891.13, p = .019, CFI = .920, RMSEA = .046, and accounted for 65.2% of the variance. Five-factor solution surpassed the CFI > .90 and RMSEA < .05 thresholds and maximized explained variance, supporting its selection as the most appropriate representation of the underlying factor structure.
+
+```{r}
+summary(efa_event)
+```
+
+To examine the latent structure of the Social Responsiveness Scale items in the event sample, exploratory factor analyses (EFA) were conducted using the lavaan package with DWLS estimation and geomin oblique rotation. Competing models specifying three, four, and five factors were evaluated based on multiple fit indices and explained variance. The three-factor solution demonstrated modest fit, χ²(1888) = 2066.74, p = .002, CFI = .880, RMSEA = .060, explaining 58.6% of the variance. The four-factor model improved upon this, χ²(1826) = 1944.12, p = .027, CFI = .921, RMSEA = .050, and explained 65.9% of the variance. The five-factor model yielded the best fit: χ²(1765) = 1837.24, p = .113, CFI = .951, RMSEA = .040, and accounted for 72.8% of the total variance. As the five-factor solution provided the most acceptable fit (non-significant χ², highest CFI, lowest RMSEA) and the greatest proportion of explained variance, it was selected as the optimal model for the event sample.
+
+Across both the goal and event samples, exploratory factor analyses indicated that five-factor solutions provided the best overall fit. 
+
+# Making sense of the loadings
+```{r}
+library(flextable)
+library(dplyr)
+library(tibble)
+
+efa_goal_5 <- efa_goal[[3]]  # 3rd model = 5-factor solution
+
+goal_loadings <- inspect(efa_goal_5, "std")$lambda |>
+  as.data.frame() |>
+  rownames_to_column("item")
+
+flextable(goal_loadings) |>
+  bold(i = ~ abs(f1) >= .30, j = "f1") |>
+  bold(i = ~ abs(f2) >= .30, j = "f2") |>
+  bold(i = ~ abs(f3) >= .30, j = "f3") |>
+  bold(i = ~ abs(f4) >= .30, j = "f4") |>
+  bold(i = ~ abs(f5) >= .30, j = "f5") |>
+  set_formatter(
+    f1 = function(x) formatC(x, digits = 2, format = "f"),
+    f2 = function(x) formatC(x, digits = 2, format = "f"),
+    f3 = function(x) formatC(x, digits = 2, format = "f"),
+    f4 = function(x) formatC(x, digits = 2, format = "f"),
+    f5 = function(x) formatC(x, digits = 2, format = "f")
+  ) |>
+  set_header_labels(values = c("item" = "Item", "f1" = "1", "f2" = "2", "f3" = "3", "f4" = "4", "f5" = "5")) |>
+  add_header_row(values = c("", "Factor Loadings"), colwidths = c(1, 5)) |>
+  align(i = 1, align = "center", part = "header")
+
+```
+
+```{r}
+efa_event_5 <- efa_event[[3]]  # 3rd model = 5-factor solution
+
+event_loadings <- inspect(efa_event_5, "std")$lambda |>
+  as.data.frame() |>
+  rownames_to_column("item")
+
+flextable(event_loadings) |>
+  bold(i = ~ abs(f1) >= .30, j = "f1") |>
+  bold(i = ~ abs(f2) >= .30, j = "f2") |>
+  bold(i = ~ abs(f3) >= .30, j = "f3") |>
+  bold(i = ~ abs(f4) >= .30, j = "f4") |>
+  bold(i = ~ abs(f5) >= .30, j = "f5") |>
+  set_formatter(
+    f1 = function(x) formatC(x, digits = 2, format = "f"),
+    f2 = function(x) formatC(x, digits = 2, format = "f"),
+    f3 = function(x) formatC(x, digits = 2, format = "f"),
+    f4 = function(x) formatC(x, digits = 2, format = "f"),
+    f5 = function(x) formatC(x, digits = 2, format = "f")
+  ) |>
+  set_header_labels(values = c("item" = "Item", "f1" = "1", "f2" = "2", "f3" = "3", "f4" = "4", "f5" = "5")) |>
+  add_header_row(values = c("", "Factor Loadings"), colwidths = c(1, 5)) |>
+  align(i = 1, align = "center", part = "header")
+
+```
+
+
+
+
+
