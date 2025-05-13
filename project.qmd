@@ -1,37 +1,58 @@
 ---
 title: "520_project"
-format: pdf
+format: html
 ---
 
 # Loading and preocessing the data
+
 ```{r}
 library(readr)
 library(dplyr)
-library(tidyr) 
+library(tidyr)
+library(lavaan)
+library(tidyverse)
 
-# Load ASD scores from two data samples and add a label column
+# Load ASD scores from two data samples and add a label column, and remove 'asd' column 
 goal_df <- read_csv("asd_goal.csv") %>%
+  select(-asd) %>%
   mutate(sample_type = "goal")
 
 event_df <- read_csv("asd_event.csv") %>%
+  select(-asd) %>%
   mutate(sample_type = "event")
 
-# Combine the two dataframes
+# Get item columns (those starting with Q25_)
+item_cols <- grep("^Q25_", names(goal_df), value = TRUE)
+
+# Define reverse-coded items (from your earlier list)
+items_to_reverse <- c("Q25_3", "Q25_7", "Q25_11", "Q25_12", "Q25_15",
+                      "Q25_17", "Q25_21", "Q25_22", "Q25_26", "Q25_32",
+                      "Q25_38", "Q25_40", "Q25_43", "Q25_45", "Q25_48")
+
+# Reverse code for both datasets (using column names directly)
+goal_df[ , items_to_reverse] <- 5 - goal_df[ , items_to_reverse]
+event_df[ , items_to_reverse] <- 5 - event_df[ , items_to_reverse]
+
+# Combine the two dataframes after reverse coding
 combined_df <- bind_rows(goal_df, event_df)
 
-# Remove rows with any NA or empty string ("") values
+# Now safely filter only the item columns for valid range (1-4)
 data_df <- combined_df %>%
-  filter(if_all(everything(), ~ !is.na(.) & . != "" & . >= 0))
+  filter(if_all(all_of(item_cols), ~ !is.na(.) & . != "" & . >= 1 & . <= 4))
 
+# Calculate ASD composite score as the sum of all Q25 items per row
+data_df <- data_df %>%
+  mutate(asd = rowSums(across(all_of(item_cols))))
+
+# Confirm it now works
 head(data_df)
 ```
 
 # Descriptive Stats
-
 ## Item-wise Stats
+
 ```{r}
 library(psych)
-library(tidyverse)
 library(dplyr)
 library(e1071)
 
@@ -66,9 +87,11 @@ sample_summary <- item_summary %>%
     skew_range = paste0(round(min(skew, na.rm = TRUE), 2), " – ", round(max(skew, na.rm = TRUE), 2)),
     kurt_range = paste0(round(min(kurt, na.rm = TRUE), 2), " – ", round(max(kurt, na.rm = TRUE), 2))
   )
+head(sample_summary)
 ```
 
 ## Composite score stats
+
 ```{r}
 # Compute descriptive statistics for the final ASD score by sample_type
 describe_by_sample <- describeBy(data_df$asd, group = data_df$sample_type, mat = TRUE)
@@ -93,6 +116,7 @@ print(describe_df)
 ```
 
 ## Distribution of composite score
+
 ```{r}
 library(ggplot2)
 
@@ -113,20 +137,251 @@ ggplot(data_df, aes(x = asd, fill = sample_type)) +
   )
 ```
 
-# Exploratory factor analysis for two samples
-```{r}
-library(lavaan)
-library(tidyverse)
+# Cronbach's Alpha
 
+```{r}
 # Get item names
 q25_items <- names(data_df)[str_detect(names(data_df), "^Q25_")]
+
+# Function to compute and print Cronbach's alpha with CI
+print_alpha_info <- function(data, label) {
+  alpha_res <- psych::alpha(data)
+  alpha_val <- alpha_res$total$raw_alpha
+  alpha_se <- alpha_res$total$ase
+  ci_lower <- alpha_val - 1.96 * alpha_se
+  ci_upper <- alpha_val + 1.96 * alpha_se
+  
+  cat(paste0("Cronbach’s Alpha for ", label, " data: ", round(alpha_val, 4), "\n"))
+  cat(paste0("95% CI: [", round(ci_lower, 4), ", ", round(ci_upper, 4), "]\n\n"))
+}
 
 # Subset goal and event samples
 goal_data <- data_df %>% filter(sample_type == "goal") %>% select(all_of(q25_items))
 event_data <- data_df %>% filter(sample_type == "event") %>% select(all_of(q25_items))
+
+# Print results
+print_alpha_info(goal_data, "goal")
+print_alpha_info(event_data, "event")
 ```
 
-# Number of factors
+Cronbach’s Alpha for goal data: 0.9397 95% CI: [0.9118, 0.9675]
+
+Cronbach’s Alpha for event data: 0.9306 95% CI: [0.8944, 0.9668]
+
+From a reliability standpoint, similar Cronbach's alpha values and overlapping CIs support the idea that the item structure is functioning similarly in both groups.
+
+# Combined sample descriptive stats
+```{r}
+# Combine goal and event samples
+combined_data <- data_df %>%
+  filter(sample_type %in% c("goal", "event")) %>%
+  select(all_of(q25_items))
+
+# Calculate composite score (sum of all items)
+combined_data$asd_total <- rowSums(combined_data, na.rm = TRUE)
+
+# Descriptive statistics
+describe_combined <- psych::describe(combined_data$asd_total) %>%
+  as.data.frame() %>%
+  mutate(across(where(is.numeric), ~round(., 2)))
+
+print(describe_combined)
+
+# Plot histogram with density curve
+ggplot(combined_data, aes(x = asd_total)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 binwidth = 5, fill = "steelblue", color = "white", alpha = 0.7) +
+  geom_density(color = "black", size = 1) +
+  theme_minimal(base_size = 14) +
+  labs(title = "Distribution of SRS-2 Total Scores (Combined Sample)",
+       x = "SRS-2 Total Score",
+       y = "Density")
+
+```
+# Combined reliability
+
+```{r}
+# Check Cronbach's Alpha for combined data
+alpha_combined <- psych::alpha(combined_data)
+cronbach_alpha_combined <- alpha_combined$total$raw_alpha
+alpha_se_combined <- alpha_combined$total$ase
+ci_lower_combined <- cronbach_alpha_combined - 1.96 * alpha_se_combined
+ci_upper_combined <- cronbach_alpha_combined + 1.96 * alpha_se_combined
+
+cat(paste0("Cronbach’s Alpha for combined data: ", round(cronbach_alpha_combined, 4), "\n"))
+cat(paste0("95% CI: [", round(ci_lower_combined, 4), ", ", round(ci_upper_combined, 4), "]\n"))
+
+```
+
+Cronbach’s Alpha for combined data: 0.9352 95% CI: [0.9127, 0.9577]
+
+This is consistent with both the goal and event subsets, within the overlapping range of their individual confidence intervals, and shows no loss of reliability upon combining.
+
+# EFA Analysis of the samples combined
+
+## Parallel analysis to estimate number of factors
+
+```{r}
+# Select and clean combined Q25 items
+combined_items <- combined_data %>%
+  select(starts_with("Q25_")) %>%
+  drop_na()
+
+# Convert to matrix
+combined_items_matrix <- as.matrix(combined_items)
+
+# Compute polychoric correlation matrix
+combined_pcorr <- lavCor(combined_items_matrix, ordered = TRUE)
+
+# Number of observations
+n_combined <- nrow(combined_items)
+set.seed(1234)
+# Run parallel analysis
+psych::fa.parallel(
+    combined_pcorr,
+    n.obs = n_combined,
+    fm = "pa",   # Principal axis factoring
+    error.bars = TRUE
+  )
+```
+
+
+## EFA
+
+```{r}
+# Run EFA with 5:6 factors
+efa_model <- efa(combined_data, nfactors = 5:6, ordered=TRUE)
+
+summary(efa_model)
+```
+
+## Loadings
+
+```{r}
+library(flextable)
+library(dplyr)
+library(tibble)
+
+# Extract the 6-factor model
+efa_combined_6 <- efa_model[[2]] 
+
+# Extract standardized loadings
+combined_loadings <- inspect(efa_combined_6, "std")$lambda |>
+  as.data.frame() |>
+  rownames_to_column("item")
+
+# Create flextable
+flextable(combined_loadings) |>
+  bold(i = ~ abs(f1) >= .30, j = "f1") |>
+  bold(i = ~ abs(f2) >= .30, j = "f2") |>
+  bold(i = ~ abs(f3) >= .30, j = "f3") |>
+  bold(i = ~ abs(f4) >= .30, j = "f4") |>
+  bold(i = ~ abs(f5) >= .30, j = "f5") |>
+  bold(i = ~ abs(f6) >= .30, j = "f6") |>
+  set_formatter(
+    f1 = function(x) formatC(x, digits = 2, format = "f"),
+    f2 = function(x) formatC(x, digits = 2, format = "f"),
+    f3 = function(x) formatC(x, digits = 2, format = "f"),
+    f4 = function(x) formatC(x, digits = 2, format = "f"),
+    f5 = function(x) formatC(x, digits = 2, format = "f"),
+    f6 = function(x) formatC(x, digits = 2, format = "f")
+  ) |>
+  set_header_labels(values = c("item" = "Item", "f1" = "1", "f2" = "2", "f3" = "3", "f4" = "4", "f5" = "5", "f6" = "6")) |>
+  add_header_row(values = c("", "Factor Loadings"), colwidths = c(1, 6)) |>
+  align(i = 1, align = "center", part = "header")
+```
+
+An exploratory factor analysis (EFA) was conducted on the combined sample (N = 62). The analysis used the weighted least squares mean and variance adjusted (WLSMV) estimator with geomin oblique rotation. Models specifying five and six factors were compared. The six-factor solution demonstrated superior fit, χ²(1705) = 1859.09, p = .005, CFI = .947, RMSEA = .038, compared to the five-factor model, χ²(1765) = 1952.89, p = .001, CFI = .935, RMSEA = .042. The six-factor solution accounted for 61.4% of the total variance, with the first factor explaining 30.6%, and subsequent factors contributing between 13.2% and 9.4%. Most items showed strong primary loadings (≥ .40) on their respective factors, including items such as Q25_8 (.889) and Q25_29 (.828), though some items (e.g., Q25_3, Q25_33, Q25_43) exhibited complex or cross-loadings. Inter-factor correlations were generally modest, with the strongest association between Factor 1 and Factor 3 (r = .430), while other correlations remained below .30, indicating that the factors represented partially distinct dimensions. The small sample size relative to the number of items (N < p) and warnings of non-positive definite covariance matrices suggest caution in interpretation and highlight the need for replication in larger samples.
+
+### Reliability of factors
+```{r}
+# Set cutoff
+loading_cutoff <- 0.30
+
+# Pivot to long format and compute directly
+assigned_factors <- combined_loadings %>%
+  pivot_longer(cols = starts_with("f"), names_to = "factor", values_to = "loading") %>%
+  mutate(abs_loading = abs(loading)) %>%
+  group_by(item) %>%
+  filter(abs_loading == max(abs_loading)) %>%
+  ungroup() %>%
+  filter(abs_loading >= loading_cutoff) %>%
+  select(item, assigned_factor = factor, max_loading = loading)
+
+# View result
+print(assigned_factors)
+
+# Get unique factors
+unique_factors <- unique(assigned_factors$assigned_factor)
+
+# Initialize results list
+alpha_results <- list()
+
+# Loop over factors and compute alpha
+for (factor_name in unique_factors) {
+  items_for_factor <- assigned_factors %>%
+    filter(assigned_factor == factor_name) %>%
+    pull(item)
+  
+  factor_data <- combined_data[, items_for_factor, drop = FALSE]
+  
+  alpha_out <- psych::alpha(factor_data)
+  
+  alpha_results[[factor_name]] <- list(
+    alpha = round(alpha_out$total$raw_alpha, 3),
+    ci_lower = round(alpha_out$total$raw_alpha - 1.96 * alpha_out$total$ase, 3),
+    ci_upper = round(alpha_out$total$raw_alpha + 1.96 * alpha_out$total$ase, 3),
+    n_items = length(items_for_factor),
+    items = items_for_factor
+  )
+}
+
+# Convert results to a clean dataframe
+alpha_results_df <- bind_rows(
+  lapply(names(alpha_results), function(f) {
+    data.frame(
+      Factor = f,
+      Alpha = alpha_results[[f]]$alpha,
+      CI = paste0("[", alpha_results[[f]]$ci_lower, ", ", alpha_results[[f]]$ci_upper, "]"),
+      N_Items = alpha_results[[f]]$n_items
+    )
+  })
+)
+
+# Print clean alpha summary
+print(alpha_results_df)
+
+# Order factors numerically f1, f2, ..., f6
+alpha_results_df_ordered <- alpha_results_df %>%
+  arrange(Factor)
+
+# Create flextable
+alpha_flextable <- alpha_results_df_ordered %>%
+  flextable() %>%
+  set_header_labels(
+    Factor = "Factor",
+    Alpha = "Cronbach's Alpha",
+    CI = "95% Confidence Interval",
+    N_Items = "Number of Items"
+  ) %>%
+  autofit() %>%
+  theme_booktabs() %>%
+  align(align = "center", part = "all") %>%
+  fontsize(size = 11, part = "all") %>%
+  bold(part = "header")
+
+# Display the flextable
+alpha_flextable
+
+```
+
+The internal consistency of the extracted factors varied considerably. Factors 1, 3, and 6 demonstrated excellent reliability, with Cronbach’s alpha values exceeding 0.80, suggesting that these item clusters are internally coherent and measure relatively homogenous constructs. Factor 4 also showed acceptable reliability (α = 0.797), while Factor 2 showed lower but still acceptable internal consistency (α = 0.745). However, Factor 5 exhibited poor internal consistency (α = 0.394), indicating that the items associated with this factor may not form a cohesive construct or may require revision. Overall, these results suggest that most factors show adequate internal reliability, with the exception of Factor 5, which should be interpreted with caution.
+
+#### Extra Analyses: The analyses below are similar to what I presented in class. Based on the feedback, I revised the analyses (reported above and in the paper), making the version below supplementary.
+
+# EFA Analysis of the two samples separately
+## Number of factors
+
 ```{r}
 # Select only ordinal item columns and ensure no NAs
 goal_items <- goal_data %>%
@@ -151,6 +406,8 @@ suppressWarnings(
   )
 )
 ```
+
+For gaol sample parallel analysis suggests 6 factors.
 
 ```{r}
 # Select only ordinal item columns and ensure no NAs
@@ -177,87 +434,134 @@ suppressWarnings(
 )
 ```
 
-Both samples suggest number of factors = 4.
+For event sample parallel analysis suggests 7 factors. So parallel analysis suggests 6/7 factors in each sample. From the prior literature we know that this scale has 5 factors. So, I will run the EFA for 5-7 factors for each sample.
 
-# EFA for 3-5 factors
+## EFA for 5-7 factors
+
 ```{r}
 # Run EFA with 3 to 5 factors for each, using DWLS for ordinal data
-efa_goal <- efa(goal_data, nfactors = 3:5, ordered = TRUE)
-efa_event <- efa(event_data, nfactors = 3:5, ordered = TRUE)
+efa_goal <- efa(goal_data, nfactors = 5:7, ordered = TRUE)
+efa_event <- efa(event_data, nfactors = 5:7, ordered = TRUE)
 ```
 
 ```{r}
 summary(efa_goal)
 ```
 
-To evaluate the latent structure of the Social Responsiveness Scale items in the goal sample, exploratory factor analyses (EFA) were conducted using the lavaan package with diagonally weighted least squares (DWLS) estimation and geomin oblique rotation. Models specifying three, four, and five factors were compared based on conventional fit indices and explained variance. The three-factor model demonstrated moderate fit, χ²(1888) = 2074.76, p = .002, CFI = .882, RMSEA = .054, and accounted for 52.2% of the total variance. The four-factor model yielded improved fit, χ²(1826) = 1981.93, p = .006, CFI = .902, RMSEA = .050, and explained 59.5% of the variance. The five-factor model demonstrated the best fit, χ²(1765) = 1891.13, p = .019, CFI = .920, RMSEA = .046, and accounted for 65.2% of the variance. Five-factor solution surpassed the CFI > .90 and RMSEA < .05 thresholds and maximized explained variance, supporting its selection as the most appropriate representation of the underlying factor structure.
+An exploratory factor analysis (EFA) using the WLSMV estimator and geomin oblique rotation was conducted on the **goal sample (N = 35)**. Models with **5, 6, and 7 factors** were compared. Fit indices indicated progressive improvement in model fit with additional factors:
+
+-   **5-factor model**: χ²(1765) = 1891.13, p = .019, CFI = .920, RMSEA = .046
+-   **6-factor model**: χ²(1705) = 1791.23, p = .072, CFI = .946, RMSEA = .039
+-   **7-factor model**: χ²(1646) = 1710.24, p = .132, CFI = .959, RMSEA = .034
+
+The **7-factor model provided the best fit**, with acceptable model fit (CFI \> .95, RMSEA \< .05) and accounted for approximately **74.5% of the total variance**. The **eigenvalues** supported the retention of multiple factors (ev1 = 20.20, ev2 = 7.71, ev3 = 5.53, ev4 = 5.18, ev5 = 4.10, ev6 = 3.54, ev7 = 2.89).
+
+The **7-factor solution revealed a complex loading pattern**, with several items showing **strong primary loadings above .70** (e.g., Q25_9 = .826, Q25_36 = .608, Q25_39 = .808), indicating strong representation of these items on their respective factors. **Multiple items exhibited cross-loadings or negative loadings**, reflecting potential overlap or conceptual ambiguity (e.g., Q25_3, Q25_11, Q25_22). Communalities were generally high, with most items accounting for **\> 60% of variance**, though a few items had lower communalities, suggesting areas for refinement.
+
+The **inter-factor correlations** were mostly weak to moderate, suggesting that the factors were **largely distinct but with some conceptual overlap**. The strongest correlation was observed between **Factor 1 and Factor 2 (r = .378, p \< .01)** and **Factor 1 and Factor 6 (r = .277)**, while several factors showed **minimal or no significant correlations** (e.g., Factor 4 and Factor 5, r = -.068). These results suggest a **multidimensional structure with modest inter-factor relationships**, supporting the view that the items tap into distinct but related constructs.
+
+Overall, the **7-factor solution was preferred for the goal data**, providing the best fit, explaining a large proportion of the variance, and reflecting the complex and multidimensional nature of the construct under investigation. However, the presence of some cross-loadings and negative loadings suggests that certain items may require further psychometric evaluation or refinement.
 
 ```{r}
 summary(efa_event)
 ```
 
-To examine the latent structure of the Social Responsiveness Scale items in the event sample, exploratory factor analyses (EFA) were conducted using the lavaan package with DWLS estimation and geomin oblique rotation. Competing models specifying three, four, and five factors were evaluated based on multiple fit indices and explained variance. The three-factor solution demonstrated modest fit, χ²(1888) = 2066.74, p = .002, CFI = .880, RMSEA = .060, explaining 58.6% of the variance. The four-factor model improved upon this, χ²(1826) = 1944.12, p = .027, CFI = .921, RMSEA = .050, and explained 65.9% of the variance. The five-factor model yielded the best fit: χ²(1765) = 1837.24, p = .113, CFI = .951, RMSEA = .040, and accounted for 72.8% of the total variance. As the five-factor solution provided the most acceptable fit (non-significant χ², highest CFI, lowest RMSEA) and the greatest proportion of explained variance, it was selected as the optimal model for the event sample.
+An exploratory factor analysis (EFA) using the WLSMV estimator and geomin oblique rotation was conducted on the **event sample (N = 27)**. Models with **5, 6, and 7 factors** were compared. Model fit indices improved with additional factors:
+-   **5-factor model**: χ²(1765) = 1837.24, p = .113, CFI = .951, RMSEA = .040
+-   **6-factor model**: χ²(1705) = 1738.46, p = .281, CFI = .978, RMSEA = .027
+-   **7-factor model**: χ²(1646) = 1647.53, p = .485, CFI = .999, RMSEA = .006
 
-Across both the goal and event samples, exploratory factor analyses indicated that five-factor solutions provided the best overall fit. 
+Given the excellent fit indices and improvement in explained variance, the **7-factor model** was preferred, accounting for **84.1% of the total variance**.
 
-# Making sense of the loadings
+The **7-factor solution demonstrated strong and interpretable loadings**, with many items loading above **.60** on their primary factors (e.g., Q25_9 = .462, Q25_35 = .907, Q25_36 = .925, Q25_40 = .924). Several items exhibited complex loading patterns and cross-loadings (e.g., Q25_3, Q25_11, Q25_17), suggesting some conceptual overlap or multidimensionality. There were also instances of **negative cross-loadings**, indicating possible inversely related constructs or response inconsistencies.
+
+Communalities were generally high, with many items exceeding **.70**, indicating that the factor model captured a substantial proportion of item variance. However, a few items demonstrated problematic loadings or inflated communalities (e.g., Q25_29, Q25_44, Q25_55), suggesting these items may require further psychometric evaluation.
+
+The **factor correlations were generally weak**, with most values below **.20**, indicating largely distinct latent dimensions. The strongest inter-factor correlation was observed between **Factor 4 and Factor 6 (r = .468, p \< .01)**, while all other factor pairs showed weak or negligible relationships (e.g., Factor 1 and Factor 2, r = -.020). This pattern suggests a **multidimensional structure with relatively independent factors**, consistent with the expectation of distinct processes measured in the event context.
+
+Overall, the **7-factor solution best represented the data for the event sample**, offering excellent fit and a well-defined factor structure. Despite some complex loading patterns, the model accounted for a high proportion of variance and revealed largely distinct dimensions with minimal overlap, supporting the **multi-dimensionality of the constructs in the event condition**.
+
+## Loadings
+
 ```{r}
 library(flextable)
 library(dplyr)
 library(tibble)
 
-efa_goal_5 <- efa_goal[[3]]  # 3rd model = 5-factor solution
+# For goal sample 7-factor loadings
+efa_goal_7 <- efa_goal[[3]]  # 3rd model = 7-factor solution
 
-goal_loadings <- inspect(efa_goal_5, "std")$lambda |>
-  as.data.frame() |>
+goal_loadings <- inspect(efa_goal_7, "std")$lambda |> 
+  as.data.frame() |> 
   rownames_to_column("item")
 
-flextable(goal_loadings) |>
-  bold(i = ~ abs(f1) >= .30, j = "f1") |>
-  bold(i = ~ abs(f2) >= .30, j = "f2") |>
-  bold(i = ~ abs(f3) >= .30, j = "f3") |>
-  bold(i = ~ abs(f4) >= .30, j = "f4") |>
-  bold(i = ~ abs(f5) >= .30, j = "f5") |>
+flextable(goal_loadings) |> 
+  bold(i = ~ abs(f1) >= .30, j = "f1") |> 
+  bold(i = ~ abs(f2) >= .30, j = "f2") |> 
+  bold(i = ~ abs(f3) >= .30, j = "f3") |> 
+  bold(i = ~ abs(f4) >= .30, j = "f4") |> 
+  bold(i = ~ abs(f5) >= .30, j = "f5") |> 
+  bold(i = ~ abs(f6) >= .30, j = "f6") |> 
+  bold(i = ~ abs(f7) >= .30, j = "f7") |> 
   set_formatter(
     f1 = function(x) formatC(x, digits = 2, format = "f"),
     f2 = function(x) formatC(x, digits = 2, format = "f"),
     f3 = function(x) formatC(x, digits = 2, format = "f"),
     f4 = function(x) formatC(x, digits = 2, format = "f"),
-    f5 = function(x) formatC(x, digits = 2, format = "f")
-  ) |>
-  set_header_labels(values = c("item" = "Item", "f1" = "1", "f2" = "2", "f3" = "3", "f4" = "4", "f5" = "5")) |>
-  add_header_row(values = c("", "Factor Loadings"), colwidths = c(1, 5)) |>
+    f5 = function(x) formatC(x, digits = 2, format = "f"),
+    f6 = function(x) formatC(x, digits = 2, format = "f"),
+    f7 = function(x) formatC(x, digits = 2, format = "f")
+  ) |> 
+  set_header_labels(values = c("item" = "Item", "f1" = "1", "f2" = "2", "f3" = "3", "f4" = "4", "f5" = "5", "f6" = "6", "f7" = "7")) |> 
+  add_header_row(values = c("", "Factor Loadings"), colwidths = c(1, 7)) |> 
   align(i = 1, align = "center", part = "header")
 
 ```
 
 ```{r}
-efa_event_5 <- efa_event[[3]]  # 3rd model = 5-factor solution
+efa_event_7 <- efa_event[[3]]  # 3rd model = 7-factor solution
 
-event_loadings <- inspect(efa_event_5, "std")$lambda |>
-  as.data.frame() |>
+event_loadings <- inspect(efa_event_7, "std")$lambda |> 
+  as.data.frame() |> 
   rownames_to_column("item")
 
-flextable(event_loadings) |>
-  bold(i = ~ abs(f1) >= .30, j = "f1") |>
-  bold(i = ~ abs(f2) >= .30, j = "f2") |>
-  bold(i = ~ abs(f3) >= .30, j = "f3") |>
-  bold(i = ~ abs(f4) >= .30, j = "f4") |>
-  bold(i = ~ abs(f5) >= .30, j = "f5") |>
+flextable(event_loadings) |> 
+  bold(i = ~ abs(f1) >= .30, j = "f1") |> 
+  bold(i = ~ abs(f2) >= .30, j = "f2") |> 
+  bold(i = ~ abs(f3) >= .30, j = "f3") |> 
+  bold(i = ~ abs(f4) >= .30, j = "f4") |> 
+  bold(i = ~ abs(f5) >= .30, j = "f5") |> 
+  bold(i = ~ abs(f6) >= .30, j = "f6") |> 
+  bold(i = ~ abs(f7) >= .30, j = "f7") |> 
   set_formatter(
     f1 = function(x) formatC(x, digits = 2, format = "f"),
     f2 = function(x) formatC(x, digits = 2, format = "f"),
     f3 = function(x) formatC(x, digits = 2, format = "f"),
     f4 = function(x) formatC(x, digits = 2, format = "f"),
-    f5 = function(x) formatC(x, digits = 2, format = "f")
-  ) |>
-  set_header_labels(values = c("item" = "Item", "f1" = "1", "f2" = "2", "f3" = "3", "f4" = "4", "f5" = "5")) |>
-  add_header_row(values = c("", "Factor Loadings"), colwidths = c(1, 5)) |>
+    f5 = function(x) formatC(x, digits = 2, format = "f"),
+    f6 = function(x) formatC(x, digits = 2, format = "f"),
+    f7 = function(x) formatC(x, digits = 2, format = "f")
+  ) |> 
+  set_header_labels(values = c("item" = "Item", "f1" = "1", "f2" = "2", "f3" = "3", "f4" = "4", "f5" = "5", "f6" = "6", "f7" = "7")) |> 
+  add_header_row(values = c("", "Factor Loadings"), colwidths = c(1, 7)) |> 
   align(i = 1, align = "center", part = "header")
 
 ```
 
+Exploratory factor analyses (EFA) were conducted separately on the **goal** and **event** samples using the WLSMV estimator and geomin oblique rotation. For both samples, models with **5 to 7 factors** were compared.
 
+In both samples, the **7-factor model provided the best fit**:
+-   **Goal sample (N = 35)**: χ²(1646) = 1710.24, p = .132, CFI = .959, RMSEA = .034, accounting for **74.5% of the variance**.
+-   **Event sample (N = 27)**: χ²(1646) = 1647.53, p = .485, CFI = .999, RMSEA = .006, accounting for **84.1% of the variance**.
 
+Notably, the **event sample demonstrated superior model fit and a higher proportion of explained variance**, suggesting a more cohesive and structured factor solution in this condition.
 
+Both samples showed **strong primary loadings (\> .60) on several factors**, with items such as **Q25_35 and Q25_36** loading robustly in both samples (\>.90). However, both samples also exhibited **complex loading patterns**, with cross-loadings and occasional negative loadings (e.g., Q25_3, Q25_11). These patterns were **more pronounced in the event sample**, where several items showed **extremely high or inflated communalities** (e.g., Q25_29, Q25_44), suggesting potential overfitting or redundancy.
 
+In both samples, **inter-factor correlations were generally weak to moderate**, reflecting distinct latent dimensions:
+-   **Goal sample**: Strongest correlation between **Factor 1 and Factor 2 (r = .378, p \< .01)**, with most other correlations below **.20**.
+-   **Event sample**: Strongest correlation between **Factor 4 and Factor 6 (r = .468, p \< .01)**, with most other correlations negligible (e.g., Factor 1 and Factor 2, r = -.020).
+
+This suggests that while both conditions exhibit multidimensional structures, the **event sample factors were more independent**, with fewer overlaps among latent dimensions.
+
+Overall, both samples support a **7-factor structure**. The **event sample demonstrated a cleaner, higher variance-explaining structure with more distinct factors**, while the **goal sample showed slightly more inter-factor correlation and cross-loadings**, suggesting greater overlap among constructs. These differences may reflect contextual differences in how the constructs are organized or interpreted across conditions.
